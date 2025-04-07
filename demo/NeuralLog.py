@@ -1,15 +1,13 @@
-import os
 import sys
 
-sys.path.append("../")
-
-import pickle
 import numpy as np
-from tensorflow.keras.utils import Sequence
-from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
-from tensorflow.keras.losses import SparseCategoricalCrossentropy
 from official.nlp import optimization
 from sklearn.utils import shuffle
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.losses import SparseCategoricalCrossentropy
+from tensorflow.keras.utils import Sequence
+
+sys.path.append("../")
 
 from neurallog.models import NeuralLog
 from neurallog import data_loader
@@ -48,8 +46,10 @@ class BatchGenerator(Sequence):
         return X[:], Y[:, 0]
 
 
-def train_generator(training_generator, validate_generator, num_train_samples, num_val_samples, batch_size,
-                    epoch_num, model_name=None):
+def train_generator(
+        training_generator, validate_generator, num_train_samples, num_val_samples,
+        batch_size, epoch_num, model_name=None
+):
     epochs = epoch_num
     steps_per_epoch = num_train_samples
     num_train_steps = steps_per_epoch * epochs
@@ -86,17 +86,18 @@ def train_generator(training_generator, validate_generator, num_train_samples, n
     )
     callbacks_list = [checkpoint, early_stop]
 
-    model.fit_generator(generator=training_generator,
-                        steps_per_epoch=int(num_train_samples / batch_size),
-                        epochs=epoch_num,
-                        verbose=1,
-                        validation_data=validate_generator,
-                        validation_steps=int(num_val_samples / batch_size),
-                        workers=16,
-                        max_queue_size=32,
-                        callbacks=callbacks_list,
-                        shuffle=True
-                        )
+    model.fit(
+        training_generator,
+        steps_per_epoch=int(num_train_samples / batch_size),
+        epochs=epoch_num,
+        verbose=1,
+        validation_data=validate_generator,
+        validation_steps=int(num_val_samples / batch_size),
+        workers=16,
+        max_queue_size=32,
+        callbacks=callbacks_list,
+        shuffle=True
+    )
     return model
 
 
@@ -122,8 +123,13 @@ def test_model(model, x, y, batch_size):
     x, y = shuffle(x, y)
     x, y = x[: len(x) // batch_size * batch_size], y[: len(y) // batch_size * batch_size]
     test_loader = BatchGenerator(x, y, batch_size)
-    prediction = model.predict_generator(test_loader, steps=(len(x) // batch_size), workers=16, max_queue_size=32,
-                                         verbose=1)
+    prediction = model.predict(
+        test_loader,
+        steps=(len(x) // batch_size),
+        workers=16,
+        max_queue_size=32,
+        verbose=1
+    )
     prediction = np.argmax(prediction, axis=1)
     y = y[:len(prediction)]
     report = classification_report(np.array(y), prediction)
