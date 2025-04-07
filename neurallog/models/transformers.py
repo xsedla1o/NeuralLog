@@ -7,12 +7,16 @@ from .positional_encodings import PositionEmbedding
 # ff_dim = 2048  # Hidden layer size in feed forward network inside transformer
 # max_len = 20
 
+
 class TransformerBlock(layers.Layer):
     def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
         super(TransformerBlock, self).__init__()
         self.att = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
         self.ffn = keras.Sequential(
-            [layers.Dense(ff_dim, activation="relu"), layers.Dense(embed_dim), ]
+            [
+                layers.Dense(ff_dim, activation="relu"),
+                layers.Dense(embed_dim),
+            ]
         )
         self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
         self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
@@ -26,6 +30,7 @@ class TransformerBlock(layers.Layer):
         ffn_output = self.ffn(out1)
         ffn_output = self.dropout2(ffn_output, training=training)
         return self.layernorm2(out1 + ffn_output)
+
 
 def transformer_classifer(embed_dim, ff_dim, max_len, num_heads, dropout=0.1):
     inputs = layers.Input(shape=(max_len, embed_dim))

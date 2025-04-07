@@ -1,6 +1,7 @@
 from tensorflow.keras import layers
 from tensorflow import keras
 
+
 def deeplog_model(h=10, no_events=500, dropout=0.1):
     inputs = layers.Input(shape=(h, 300))
     x = layers.LSTM(128, return_sequences=True)(inputs)
