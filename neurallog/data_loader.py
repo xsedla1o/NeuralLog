@@ -1,5 +1,5 @@
 import random
-from typing import Tuple
+from typing import Tuple, Callable, List, Dict
 
 import pandas as pd
 import numpy as np
@@ -39,6 +39,7 @@ def gpt2_encoder(s, no_wordpiece=0):
     global gpt2_tokenizer, gpt2_model
     if gpt2_tokenizer is None or gpt2_model is None:
         from transformers import GPT2Tokenizer, TFGPT2Model
+
         gpt2_tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
         gpt2_model = TFGPT2Model.from_pretrained("gpt2")
 
@@ -69,6 +70,7 @@ def bert_encoder(s, no_wordpiece=0):
     global bert_tokenizer, bert_model
     if bert_tokenizer is None or bert_model is None:
         from transformers import BertTokenizer, TFBertModel
+
         bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
         bert_model = TFBertModel.from_pretrained("bert-base-uncased")
 
@@ -96,6 +98,7 @@ def xlm_encoder(s, no_wordpiece=0):
     global xlm_tokenizer, xlm_model
     if xlm_tokenizer is None or xlm_model is None:
         from transformers import RobertaTokenizer, TFRobertaModel
+
         xlm_tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
         xlm_model = TFRobertaModel.from_pretrained("roberta-base")
 
@@ -107,6 +110,18 @@ def xlm_encoder(s, no_wordpiece=0):
     outputs = xlm_model(**inputs)
     v = tf.reduce_mean(outputs.last_hidden_state, 1)
     return v[0]
+
+
+def _select_encoder(encoder_name: str) -> Callable:
+    e_type = encoder_name.lower()
+    if e_type == "bert":
+        return bert_encoder
+    elif e_type == "xlm":
+        return xlm_encoder
+    elif e_type == "gpt2":
+        return gpt2_encoder
+    else:
+        raise ValueError(f"Embedding type '{e_type}' is not in BERT, XLM, or GPT2")
 
 
 def _split_data(x_data, y_data=None, train_ratio=0, split_type="uniform"):
@@ -197,8 +212,9 @@ def performance_injection(sequence):
 
 
 def load_HDFS_file(
-    log_file, encoder, no_word_piece=0, skip_multi_blk=True
-) -> Tuple[pd.DataFrame, dict, dict, dict]:
+    log_file, encoder_name: str, no_word_piece=0, skip_multi_blk=True
+) -> Tuple[pd.DataFrame, Dict[str, np.ndarray], Dict[str, int], Dict[int, int]]:
+    encoder = _select_encoder(encoder_name)
     E = {}
     content2content_id = {}
     line2content_id = {}
@@ -234,11 +250,10 @@ def load_HDFS_file(
                 data_dict[blk_Id] = []
             data_dict[blk_Id].append((E[content], timestamp))
         i += 1
-        if i % 10000 == 0 or i == n_logs:
+        if i % 10000 == 0 or i + 1 == n_logs:
             print(
-                "\rLoading {0:.2f}% - line {1} of {2} - number of unique messages: {3}".format(
-                    i / n_logs * 100, i, n_logs, len(E.keys())
-                ),
+                f"\rLoading {i / n_logs * 100:.2f}% - line {i}/{n_logs} - "
+                f"found {len(E)} unique messages",
                 end="",
             )
     for k, v in data_dict.items():
@@ -286,23 +301,8 @@ def load_HDFS(
 
     print("====== Input data summary ======")
 
-    e_type = e_type.lower()
-    if e_type == "bert":
-        encoder = bert_encoder
-    elif e_type == "xlm":
-        encoder = xlm_encoder
-    else:
-        if e_type == "gpt2":
-            encoder = gpt2_encoder
-        else:
-            raise ValueError(
-                "Embedding type {0} is not in BERT, XLM, and GPT2".format(
-                    e_type.upper()
-                )
-            )
-
     t0 = time.time()
-    data_df, *_ = load_HDFS_file(log_file, encoder, no_word_piece=no_word_piece)
+    data_df, *_ = load_HDFS_file(log_file, e_type, no_word_piece=no_word_piece)
 
     if label_file:
         # Split training and validation set in a class-uniform way
@@ -380,6 +380,138 @@ def load_HDFS(
     return (x_train, y_train), (x_test, y_test)
 
 
+def load_supercomputers_file(
+    log_file: str,
+    encoder_name: str,
+    no_word_piece: int = 0,
+    train_ratio=0.5,
+    windows_size=20,
+    step_size=20,
+) -> Tuple[
+    Tuple[List[list], List[int], List[list], List[int]],
+    Dict[str, np.ndarray],
+    Dict[str, int],
+    Dict[int, int],
+]:
+    """
+    Reads a supercomputer log file, creates sliding windows,
+    encodes messages, determines window labels, and returns processed data.
+
+    Parameters
+    ----------
+    log_file : str
+        Path to the raw log file.
+    encoder_name:
+        Name of the encoder to use (e.g., 'bert', 'xlm', 'gpt2').
+    no_word_piece : int, optional
+        Flag passed to the encoder (0 or 1), by default 0.
+    train_ratio : float, optional
+        Ratio of training data to total data, by default 0.5.
+    windows_size : int, optional
+        The number of log lines in each sliding window, by default 20.
+    step_size : int, optional
+        The step size for moving the sliding window, by default 20.
+
+
+    Returns
+    -------
+    Tuple[
+        Tuple[List[list], List[int], List[list], List[int]],
+        Dict[str, np.ndarray],
+        Dict[str, int],
+        Dict[int, int],
+    ]
+        A tuple containing:
+        - A tuple of training and testing data (x_tr, y_tr, x_te, y_te).
+        - A dictionary mapping log messages to their embeddings.
+        - A dictionary mapping log messages to their IDs.
+        - A dictionary mapping line numbers to their content IDs.
+    """
+    encoder = _select_encoder(encoder_name)
+    E = {}
+    content2content_id = {}
+    line2content_id = {}
+
+    x_tr, y_tr = [], []
+    x_te, y_te = [], []
+    i = 0
+    c = 0
+    failure_count = 0
+
+    print("Loading", log_file)
+    with open(log_file, mode="r", encoding="utf8") as f:
+        logs = f.readlines()
+        logs = [x.strip() for x in logs]
+    n_logs = len(logs)
+    print("Loaded", n_logs, "lines!")
+
+    n_train = int(len(logs) * train_ratio)
+    while i < n_train - windows_size:
+        c += 1
+        if c % 10000 == 0:
+            print(
+                f"\rLoading {c / n_logs * 100:.2f}% - line {c}/{n_logs} - "
+                f"found {len(E)} unique messages",
+                end="",
+            )
+
+        if logs[i][0] != "-":
+            failure_count += 1
+        seq = []
+        label = 0
+        for j in range(i, i + windows_size):
+            if logs[j][0] != "-":
+                label = 1
+            content = logs[j]
+            # remove label from log messages
+            content = content[content.find(" ") + 1 :]
+            content = clean(content.lower())
+            if content not in E.keys():
+                try:
+                    E[content] = encoder(content, no_word_piece)
+                    content2content_id[content] = len(content2content_id)
+                except Exception as e:
+                    print(f"\nError {e} on line {j}: {content}")
+            line2content_id[j] = content2content_id[content]
+            emb = E[content]
+            seq.append(emb)
+        x_tr.append(seq.copy())
+        y_tr.append(label)
+        i = i + step_size
+    print("\nlast train index:", i)
+
+    #
+    for i in range(n_train, len(logs) - windows_size, step_size):
+        if i % 10000 == 0 or i + 1 == n_logs:
+            print(
+                f"\rLoading {i / n_logs * 100:.2f}% - line {i}/{n_logs} - "
+                f"found {len(E)} unique messages",
+                end="",
+            )
+        if logs[i][0] != "-":
+            failure_count += 1
+        seq = []
+        label = 0
+        for j in range(i, i + windows_size):
+            if logs[j][0] != "-":
+                label = 1
+            content = logs[j]
+            # remove label from log messages
+            content = content[content.find(" ") + 1 :]
+            content = clean(content.lower())
+            if content not in E.keys():
+                E[content] = encoder(content, no_word_piece)
+                content2content_id[content] = len(content2content_id)
+            line2content_id[j] = content2content_id[content]
+            emb = E[content]
+            seq.append(emb)
+        x_te.append(seq.copy())
+        y_te.append(label)
+
+    print("Total failure logs: {0}".format(failure_count))
+    return (x_tr, y_tr, x_te, y_te), E, content2content_id, line2content_id
+
+
 def balancing(x, y):
     if y.count(0) > y.count(1):
         pos_idx = [i for i, l in enumerate(y) if l == 1]
@@ -420,7 +552,7 @@ def load_supercomputers(
     log_file,
     train_ratio=0.5,
     windows_size=20,
-    step_size=0,
+    step_size=20,
     e_type="bert",
     mode="balance",
     no_word_piece=0,
@@ -441,91 +573,16 @@ def load_supercomputers(
     (x_tr, y_tr): the training data
     (x_te, y_te): the testing data
     """
-    print("Loading", log_file)
+    (x_tr, y_tr, x_te, y_te), *_ = load_supercomputers_file(
+        log_file,
+        e_type,
+        windows_size,
+        step_size,
+        no_word_piece=no_word_piece,
+        train_ratio=train_ratio,
+    )
 
-    with open(log_file, mode="r", encoding="utf8") as f:
-        logs = f.readlines()
-        logs = [x.strip() for x in logs]
-    E = {}
-    e_type = e_type.lower()
-    if e_type == "bert":
-        encoder = bert_encoder
-    elif e_type == "xlm":
-        encoder = xlm_encoder
-    else:
-        if e_type == "gpt2":
-            encoder = gpt2_encoder
-        else:
-            raise ValueError(
-                "Embedding type {0} is not in BERT, XLM, and GPT2".format(
-                    e_type.upper()
-                )
-            )
-
-    print("Loaded", len(logs), "lines!")
-    x_tr, y_tr = [], []
-    i = 0
-    failure_count = 0
-    n_train = int(len(logs) * train_ratio)
-    c = 0
-    t0 = time.time()
-    while i < n_train - windows_size:
-        c += 1
-        if c % 1000 == 0:
-            print(
-                "\rLoading {0:.2f}% - {1} unique logs".format(
-                    i * 100 / n_train, len(E.keys())
-                ),
-                end="",
-            )
-        if logs[i][0] != "-":
-            failure_count += 1
-        seq = []
-        label = 0
-        for j in range(i, i + windows_size):
-            if logs[j][0] != "-":
-                label = 1
-            content = logs[j]
-            # remove label from log messages
-            content = content[content.find(" ") + 1 :]
-            content = clean(content.lower())
-            if content not in E.keys():
-                try:
-                    E[content] = encoder(content, no_word_piece)
-                except Exception as _:
-                    print(content)
-            emb = E[content]
-            seq.append(emb)
-        x_tr.append(seq.copy())
-        y_tr.append(label)
-        i = i + step_size
-    print("\nlast train index:", i)
-    x_te = []
-    y_te = []
-    #
-    for i in range(n_train, len(logs) - windows_size, step_size):
-        if i % 1000 == 0:
-            print("Loading {:.2f}".format(i * 100 / n_train))
-        if logs[i][0] != "-":
-            failure_count += 1
-        seq = []
-        label = 0
-        for j in range(i, i + windows_size):
-            if logs[j][0] != "-":
-                label = 1
-            content = logs[j]
-            # remove label from log messages
-            content = content[content.find(" ") + 1 :]
-            content = clean(content.lower())
-            if content not in E.keys():
-                E[content] = encoder(content, no_word_piece)
-            emb = E[content]
-            seq.append(emb)
-        x_te.append(seq.copy())
-        y_te.append(label)
-
-    (x_tr, y_tr) = shuffle(x_tr, y_tr)
-    print("Total failure logs: {0}".format(failure_count))
+    x_tr, y_tr = shuffle(x_tr, y_tr)
 
     if mode == "balance":
         x_tr, y_tr = balancing(x_tr, y_tr)
@@ -556,7 +613,7 @@ def load_supercomputers(
     return (x_tr, y_tr), (x_te, y_te)
 
 
-if __name__ == "__main__":
+def main():
     # (x_tr, y_tr), (x_te, y_te) = load_Supercomputers(
     #     "../data/raw/BGL.log", train_ratio=0.8, windows_size=20,
     #     step_size=0, e_type='bert', e_name=None, mode='imbalance')
@@ -579,3 +636,7 @@ if __name__ == "__main__":
     #
     # with open("./data/embeddings/BGL/neural-test.pkl", mode="wb") as f:
     #     pickle.dump((x_te, y_te), f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+if __name__ == "__main__":
+    main()
