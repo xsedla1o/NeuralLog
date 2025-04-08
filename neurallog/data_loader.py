@@ -9,24 +9,20 @@ import re
 from sklearn.utils import shuffle
 import pickle
 import string
-from transformers import GPT2Tokenizer, TFGPT2Model
-from transformers import BertTokenizer, TFBertModel
-from transformers import RobertaTokenizer, TFRobertaModel
 import tensorflow as tf
 import time
 from datetime import datetime
 
+# Lazy initialization for tokenizers and models
 # Pre-trained GPT2 model
-gpt2_tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-gpt2_model = TFGPT2Model.from_pretrained("gpt2")
-
+gpt2_tokenizer = None
+gpt2_model = None
 # Pre-trained BERT model
-bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-bert_model = TFBertModel.from_pretrained("bert-base-uncased")
-
+bert_tokenizer = None
+bert_model = None
 # Pre-trained XLM model
-xlm_tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
-xlm_model = TFRobertaModel.from_pretrained("roberta-base")
+xlm_tokenizer = None
+xlm_model = None
 
 
 def gpt2_encoder(s, no_wordpiece=0):
@@ -40,6 +36,12 @@ def gpt2_encoder(s, no_wordpiece=0):
     -------
         np array in shape of (768,)
     """
+    global gpt2_tokenizer, gpt2_model
+    if gpt2_tokenizer is None or gpt2_model is None:
+        from transformers import GPT2Tokenizer, TFGPT2Model
+        gpt2_tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        gpt2_model = TFGPT2Model.from_pretrained("gpt2")
+
     if no_wordpiece:
         words = s.split(" ")
         words = [word for word in words if word in gpt2_tokenizer.get_vocab().keys()]
@@ -64,6 +66,12 @@ def bert_encoder(s, no_wordpiece=0):
     -------
         np array in shape of (768,)
     """
+    global bert_tokenizer, bert_model
+    if bert_tokenizer is None or bert_model is None:
+        from transformers import BertTokenizer, TFBertModel
+        bert_tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        bert_model = TFBertModel.from_pretrained("bert-base-uncased")
+
     if no_wordpiece:
         words = s.split(" ")
         words = [word for word in words if word in bert_tokenizer.vocab.keys()]
@@ -85,6 +93,12 @@ def xlm_encoder(s, no_wordpiece=0):
     -------
         np array in shape of (768,)
     """
+    global xlm_tokenizer, xlm_model
+    if xlm_tokenizer is None or xlm_model is None:
+        from transformers import RobertaTokenizer, TFRobertaModel
+        xlm_tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+        xlm_model = TFRobertaModel.from_pretrained("roberta-base")
+
     if no_wordpiece:
         words = s.split(" ")
         words = [word for word in words if word in xlm_tokenizer.get_vocab().keys()]
