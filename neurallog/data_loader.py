@@ -1,4 +1,5 @@
 import random
+from typing import Tuple
 
 import pandas as pd
 import numpy as np
@@ -181,6 +182,64 @@ def performance_injection(sequence):
         i += 1
 
 
+def load_HDFS_file(
+    log_file, encoder, no_word_piece=0, skip_multi_blk=True
+) -> Tuple[pd.DataFrame, dict, dict, dict]:
+    E = {}
+    content2content_id = {}
+    line2content_id = {}
+
+    print("Loading", log_file)
+    with open(log_file, mode="r", encoding="utf8") as f:
+        logs = f.readlines()
+        logs = [x.strip() for x in logs]
+    data_dict = OrderedDict()
+    n_logs = len(logs)
+    print(n_logs)
+    print("Loaded", n_logs, "lines!")
+    for i, line in enumerate(logs):
+        timestamp = " ".join(line.split()[:2])
+        try:
+            timestamp = datetime.strptime(timestamp, "%y%m%d %H%M%S").timestamp()
+        except ValueError as e:
+            print(f"\nError, {e} on line {i}: {line}")
+            continue
+        blkId_list = re.findall(r"(blk_-?\d+)", line)
+        blkId_list = list(set(blkId_list))
+        if len(blkId_list) >= 2 and skip_multi_blk:
+            continue
+        blkId_set = set(blkId_list)
+        content = clean(line).lower()
+        if content not in E.keys():
+            E[content] = encoder(content, no_word_piece)
+            content2content_id[content] = len(content2content_id)
+        line2content_id[i] = content2content_id[content]
+
+        for blk_Id in blkId_set:
+            if not blk_Id in data_dict:
+                data_dict[blk_Id] = []
+            data_dict[blk_Id].append((E[content], timestamp))
+        i += 1
+        if i % 10000 == 0 or i == n_logs:
+            print(
+                "\rLoading {0:.2f}% - line {1} of {2} - number of unique messages: {3}".format(
+                    i / n_logs * 100, i, n_logs, len(E.keys())
+                ),
+                end="",
+            )
+    for k, v in data_dict.items():
+        seq = [x[0] for x in v]
+        rt = [x[1] for x in v]
+        rt = [rt[i] - rt[i - 1] for i in range(len(rt))]
+        rt = [0] + rt
+        data_dict[k] = (seq, rt)
+    data_df = [(k, v[0], v[1]) for k, v in data_dict.items()]
+    data_df = pd.DataFrame(
+        data_df, columns=["BlockId", "EventSequence", "TimeSequence"]
+    )
+    return data_df, E, content2content_id, line2content_id
+
+
 def load_HDFS(
     log_file,
     label_file=None,
@@ -208,6 +267,8 @@ def load_HDFS(
         (x_train, y_train): the training data
         (x_test, y_test): the testing data
     """
+    assert window == "session", "Only window=session is supported for HDFS dataset."
+    assert log_file.endswith(".log"), "Missing .log file"
 
     print("====== Input data summary ======")
 
@@ -226,52 +287,8 @@ def load_HDFS(
                 )
             )
 
-    E = {}
     t0 = time.time()
-    assert log_file.endswith(".log"), "Missing .log file"
-    # elif log_file.endswith('.log'):
-    assert window == "session", "Only window=session is supported for HDFS dataset."
-    print("Loading", log_file)
-    with open(log_file, mode="r", encoding="utf8") as f:
-        logs = f.readlines()
-        logs = [x.strip() for x in logs]
-    data_dict = OrderedDict()
-    n_logs = len(logs)
-    print(n_logs)
-    print("Loaded", n_logs, "lines!")
-    for i, line in enumerate(logs):
-        timestamp = " ".join(line.split()[:2])
-        timestamp = datetime.strptime(timestamp, "%y%m%d %H%M%S").timestamp()
-        blkId_list = re.findall(r"(blk_-?\d+)", line)
-        blkId_list = list(set(blkId_list))
-        if len(blkId_list) >= 2:
-            continue
-        blkId_set = set(blkId_list)
-        content = clean(line).lower()
-        if content not in E.keys():
-            E[content] = encoder(content, no_word_piece)
-        for blk_Id in blkId_set:
-            if not blk_Id in data_dict:
-                data_dict[blk_Id] = []
-            data_dict[blk_Id].append((E[content], timestamp))
-        i += 1
-        if i % 1000 == 0 or i == n_logs:
-            print(
-                "\rLoading {0:.2f}% - number of unique message: {1}".format(
-                    i / n_logs * 100, len(E.keys())
-                ),
-                end="",
-            )
-    for k, v in data_dict.items():
-        seq = [x[0] for x in v]
-        rt = [x[1] for x in v]
-        rt = [rt[i] - rt[i - 1] for i in range(len(rt))]
-        rt = [0] + rt
-        data_dict[k] = (seq, rt)
-    data_df = [(k, v[0], v[1]) for k, v in data_dict.items()]
-    data_df = pd.DataFrame(
-        data_df, columns=["BlockId", "EventSequence", "TimeSequence"]
-    )
+    data_df, *_ = load_HDFS_file(log_file, encoder, no_word_piece=no_word_piece)
 
     if label_file:
         # Split training and validation set in a class-uniform way
