@@ -384,9 +384,9 @@ def load_supercomputers_file(
     log_file: str,
     encoder_name: str,
     no_word_piece: int = 0,
-    train_ratio=0.5,
-    windows_size=20,
-    step_size=20,
+    train_ratio: float = 0.5,
+    windows_size: int = 20,
+    step_size: int = 20,
 ) -> Tuple[
     Tuple[List[list], List[int], List[list], List[int]],
     Dict[str, np.ndarray],
@@ -480,9 +480,9 @@ def load_supercomputers_file(
         i = i + step_size
     print("\nlast train index:", i)
 
-    #
+    base = n_train % 10000
     for i in range(n_train, len(logs) - windows_size, step_size):
-        if i % 10000 == 0 or i + 1 == n_logs:
+        if i % 10000 == base:
             print(
                 f"\rLoading {i / n_logs * 100:.2f}% - line {i}/{n_logs} - "
                 f"found {len(E)} unique messages",
@@ -508,7 +508,7 @@ def load_supercomputers_file(
         x_te.append(seq.copy())
         y_te.append(label)
 
-    print("Total failure logs: {0}".format(failure_count))
+    print("\nTotal failure logs: {0}".format(failure_count))
     return (x_tr, y_tr, x_te, y_te), E, content2content_id, line2content_id
 
 
